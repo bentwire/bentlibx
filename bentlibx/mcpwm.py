@@ -118,6 +118,16 @@ class MCPWM(Module, AutoCSR):
         self._polarity = CSRStorage(self.n, name="polarity", fields=fields, description="""MCPWM Channel Polarity bits.""",
             reset = self.polarity.reset)
         
+        fields = []
+        for i in range(self.n):
+            fields.append(CSRField(name="sync{i}".format(i=i), description="Enable synchronus updates on channel {i}".format(i=i), reset=self.default_polarity, values=[
+                ("0", "DIS", "Channel {i} pulse width updates immediately on CSR write".format(i=i)),
+                ("1", "EN", "Channel {i} pulse width updates on counter overflow.".format(i=i))
+                ]))
+
+        self._sync_updates = CSRStorage(self.n, name="sync_updates", fields=fields, description="""MCPWM Sync Update bits.""",
+            reset = self.sync_updates.reset)
+
         self._counter = CSRStatus(32, name="counter", description="""MCPWM Counter.\n""", reset=0)
 
         self._period = CSRStorage(32, reset_less=True, description="""MCPWM Period.\n
@@ -139,6 +149,7 @@ class MCPWM(Module, AutoCSR):
         self.specials += [
             MultiReg(self._enable.storage, self.enable, n=n),
             MultiReg(self._polarity.storage, self.polarity, n=n),
+            MultiReg(self._sync_updates.storage, self.sync_updates, n=n),
             MultiReg(self._period.storage, self.period, n=n),
             MultiReg(self.counter, self._counter.status, n=n),
         ]
