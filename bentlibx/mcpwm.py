@@ -8,8 +8,215 @@ from migen import *
 from migen.genlib.cdc import MultiReg
 
 from litex.soc.interconnect.csr import *
+from litex.soc.interconnect.csr_eventmanager import *
+from litex.soc.integration.doc import AutoDoc, ModuleDoc
 
-class MCPWM(Module, AutoCSR):
+class Counter(Module, AutoCSR, AutoDoc):
+
+    def __init__(self, clock_domain="sys", default_enable=1, default_sync=0, default_nbits=32, default_period=0, with_csr=True, with_interrupts=True):
+        # Reset
+        self.reset  = Signal()
+        # Enable counter
+        self.enable = Signal(reset=default_enable)
+        # Enable Synchronus updates
+        self.syncup = Signal(reset=default_sync)
+        # Counter number of bits
+        self.nbits = default_nbits
+        # Counter
+        self.counter = Signal(self.nbits)
+        # Counter period (counter resets to 0 at this value, or switches direction if up/down counter"
+        self.period = Signal(self.nbits, reset=default_period)
+        # Period shadow register for sync updates
+        self._period = Signal(self.nbits, reset=default_period)
+   
+        # Update counter
+        sync = getattr(self.sync, clock_domain)
+        sync += [
+                If(self.enable & ~self.reset,
+                    self.counter.eq(self.counter + 1),
+                    If(self.syncup == 0,
+                        self.period.eq(self._period)
+                    ),
+                    If(self.counter == (self.period - 1),
+                        self.counter.eq(0),
+                        If(self.syncup == 1,
+                            self.period.eq(self._period)
+                        )
+                    ),
+                ).Else(
+                    self.period.eq(self._period),
+                    self.counter.eq(0)
+                )
+            ]
+        if with_csr:
+            self.add_csr(clock_domain)
+        if with_interrupts:
+            self.add_evt(clock_domain)
+
+    def add_csr(self, clock_domain):
+        # Control register
+        fields = []
+        fields.append(CSRField(name=F"en", description=F"Enable Counter", reset=self.enable.reset, values=[
+            ("0", "DIS", "Disable Counter"),
+            ("1", "EN", "Enable Counter"),
+            ]))
+
+        fields.append(CSRField(name=F"sync", description=F"Enable Synchronus Period Updates", reset=self.syncup.reset, values=[
+            ("0", "DIS", "Disable Syncup"),
+            ("1", "EN", "Enable Syncup"),
+            ]))
+
+        self._csr_control = CSRStorage(2, name="control", fields=fields, description="Enable Counter: 1 Enable, 0 Disable",
+            reset = self.enable.reset)
+
+        # Counter register
+        self._csr_counter = CSRStatus(32, name="value", description="Counter Value", reset=0)
+
+        # Period register
+        self._csr_period = CSRStorage(32, name="period", reset_less=True, description="Counter Period", reset = self.period.reset)
+
+        # Clock domain stuff
+        n = 0 if clock_domain == "sys" else 2
+        control = Signal(2)
+        self.specials += [
+            MultiReg(self._csr_control.storage, control, n=n),
+            MultiReg(self._csr_period.storage, self._period, n=n),
+            MultiReg(self.counter, self._csr_counter.status, n=n),
+        ]
+
+        self.comb += [
+            self.enable.eq(control[0]),
+            self.syncup.eq(control[1])
+        ]
+
+    def add_evt(self, clock_domain):
+        self.submodules.ev = EventManager()
+        self.ev.ovf = EventSourcePulse(description="Counter overflow event.")
+        self.ev.finalize()
+        self.comb += self.ev.ovf.trigger.eq(self.counter == (self.period - 1))
+
+class Channel(Module, AutoCSR, AutoDoc):
+    def __init__(self, counter, iopin = None, clock_domain="sys", default_pol=0, default_enable=1, default_sync=0, default_nbits=32, default_pw=0, with_csr=True, with_interrupts=True):
+        # Reset
+        self.reset  = Signal()
+        # Enable Channel
+        self.enable = Signal(reset=default_enable)
+        # Channel polarity
+        self.pol = Signal(reset=default_pol)
+        # Enable Synchronus updates
+        self.syncup = Signal(reset=default_sync)
+        # Counter number of bits
+        self.nbits = default_nbits
+        # Counter from the Counter module
+        self.counter = counter
+        # Channel pulse width, the output is asserted this many clk cycles.
+        self.pw  = Signal(self.nbits, reset=default_pw)
+        # Pulse width shadow register for sync updates
+        self._pw = Signal(self.nbits, reset=default_pol)
+  
+        # The pin for this channel
+        if iopin is None:
+            self.iopin = iopin = Signal()
+        else:
+            self.iopin = iopin
+
+        # Update Channel status
+        sync = getattr(self.sync, clock_domain)
+        sync += [
+                If(self.enable & ~self.reset,
+                    If(self.syncup == 0,
+                        self.pw.eq(self._pw)
+                    ),
+                    If(self.counter == self.pw,
+                        iopin.eq(~self.pol)
+                    ),
+                    If(self.counter == 0,
+                        iopin.eq(self.pol),
+                        If(self.syncup == 1,
+                            self.pw.eq(self._pw)
+                        )
+                    )
+                ).Else(
+                    self.pw.eq(self._pw),
+                    iopin.eq(self.pol),
+                )
+            ]
+
+        if with_csr:
+            self.add_csr(clock_domain)
+        if with_interrupts:
+            self.add_evt(clock_domain)
+
+    def add_csr(self, clock_domain):
+        # Control register
+        fields = []
+        fields.append(CSRField(name=F"en", description=F"Enable Channel", reset=self.enable.reset, values=[
+            ("0", "DIS", "Disable Channel"),
+            ("1", "EN", "Enable Channel"),
+            ]))
+
+        fields.append(CSRField(name=F"sync", description=F"Enable Synchronus Pulse Width Updates", reset=self.syncup.reset, values=[
+            ("0", "DIS", "Disable Syncup"),
+            ("1", "EN", "Enable Syncup"),
+            ]))
+
+        self._csr_control = CSRStorage(2, name="control", fields=fields, description="Control Register",
+            reset = Cat(self.enable.reset, self.syncup.reset))
+
+        # Pulse Width Register
+        self._csr_pw = CSRStorage(self.nbits, name="pw", description="Pulse Width", reset=self._pw.reset)
+
+        # Clock domain stuff
+        n = 0 if clock_domain == "sys" else 2
+        control = Signal(2)
+        self.specials += [
+            MultiReg(self._csr_control.storage, control, n=n),
+            MultiReg(self._csr_pw.storage, self._pw, n=n),
+        ]
+
+        self.comb += [
+            self.enable.eq(control[0]),
+            self.syncup.eq(control[1])
+        ]
+
+    def add_evt(self, clock_domain):
+        self.submodules.ev = EventManager()
+        self.ev.chmatch = EventSourcePulse(description="Channel match event.")
+        self.ev.finalize()
+        self.comb += self.ev.chmatch.trigger.eq(self.counter == self.pw)
+
+class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
+    def __init__(self, pads=None, clock_domain="sys", counter_nbits=32, with_csr=True, num_channels=8, 
+        default_enable   = 1,
+        default_polarity = 0,
+        default_sync     = 0,
+        default_pw       = 512,
+        default_period   = 1024):
+
+        if pads is None:
+            self.nchannels = num_channels
+            self.pads      = pads = Signal(num_channels)
+        else:
+            self.nchannels = len(pads)
+            self.pads      = pads
+
+        self.submodules.ev = EventManager()
+        self.ev.placeholder = EventSourceProcess(edge="rising", description="WHy do I need this?")
+        self.submodules.counter = counter = Counter(default_enable=default_enable,
+                                          default_sync=default_sync,
+                                          default_period=default_period,
+                                          default_nbits=counter_nbits)
+        for i in range(self.nchannels):
+            setattr(self.submodules, F"ch{i}", Channel(counter.counter, iopin=pads[i], with_interrupts=False,
+                                                                                default_enable=default_enable,
+                                                                                default_sync=default_sync,
+                                                                                default_pw=default_pw,
+                                                                                default_pol=default_polarity,
+                                                                                default_nbits=counter_nbits))
+
+        self.ev.finalize()
+
+class MCPWM(Module, AutoCSR, AutoDoc):
     """ Multi-Channel Pulse Width Modulation
 
     """
@@ -56,6 +263,18 @@ class MCPWM(Module, AutoCSR):
      
         self.counter = Signal(32, reset_less=True)
 
+        # Set up EvemtManager for interrupts to SoC core.
+        self.submodules.ev = EventManager()
+        self.submodules.evch = EventManager()
+        # Counter overflow
+        self.ev.ovf = EventSourceProcess(edge="rising", description="Counter overflow event.")
+        # Channel match
+#        for i in range(self.n):
+#            setattr(self.ev[1],F"ch{i}", EventSourceProcess(name=F"ch{i}", edge="rising", description=F"Channel {i} match event."))
+#
+#        self.ev[0].finalize()
+        self.ev.finalize()
+
         sync = getattr(self.sync, clock_domain)
         sync += [
                 If(self.enabled & ~self.reset,
@@ -92,6 +311,7 @@ class MCPWM(Module, AutoCSR):
         
         self.comb += pads.eq(self.pwm)
         self.comb += self.enabled.eq(self.enable != 0)
+        self.comb += self.ev.ovf.trigger.eq(self.counter == 0)
 
         if with_csr:
             self.add_csr(clock_domain)
