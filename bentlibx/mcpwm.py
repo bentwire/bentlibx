@@ -56,12 +56,12 @@ class Counter(Module, AutoCSR, AutoDoc):
     def add_csr(self, clock_domain):
         # Control register
         fields = []
-        fields.append(CSRField(name=F"en", description=F"Enable Counter", reset=self.enable.reset, values=[
+        fields.append(CSRField(name=F"ena", description=F"Enable Counter", reset=self.enable.reset, values=[
             ("0", "DIS", "Disable Counter"),
             ("1", "EN", "Enable Counter"),
             ]))
 
-        fields.append(CSRField(name=F"sync", description=F"Enable Synchronus Period Updates", reset=self.syncup.reset, values=[
+        fields.append(CSRField(name=F"sup", description=F"Enable Synchronus Period Updates", reset=self.syncup.reset, values=[
             ("0", "DIS", "Disable Syncup"),
             ("1", "EN", "Enable Syncup"),
             ]))
@@ -96,7 +96,7 @@ class Counter(Module, AutoCSR, AutoDoc):
         self.comb += self.ev.ovf.trigger.eq(self.counter == (self.period - 1))
 
 class Channel(Module, AutoCSR, AutoDoc):
-    def __init__(self, counter, iopin = None, clock_domain="sys", default_pol=0, default_enable=1, default_sync=0, default_nbits=32, default_pw=0, with_csr=True, with_interrupts=True):
+    def __init__(self, counter, iopin = None, clock_domain="sys", default_pol=0, default_enable=1, default_sync=0, default_nbits=32, default_mat=0, with_csr=True, with_control_reg=False, with_interrupts=True):
         # Reset
         self.reset  = Signal()
         # Enable Channel
@@ -109,11 +109,86 @@ class Channel(Module, AutoCSR, AutoDoc):
         self.nbits = default_nbits
         # Counter from the Counter module
         self.counter = counter
-        # Channel pulse width, the output is asserted this many clk cycles.
-        self.pw  = Signal(self.nbits, reset=default_pw)
+        # Channel match value, also channel capture 1
+        self.mat  = Signal(self.nbits, reset=default_mat)
         # Pulse width shadow register for sync updates
-        self._pw = Signal(self.nbits, reset=default_pol)
-  
+        self._mat = Signal(self.nbits, reset=default_mat)
+        # Channel mode register
+        # 0: PWM (Match mode)
+        # 1: Input Capture Mode
+        # 2: Output Compare Mode
+        # 3: Undefined
+        self.mode = Signal(2, reset=0)
+        modes = {
+            0: If(self.enable & ~self.reset,
+                    If(self.syncup == 0,
+                        self.mat.eq(self._mat)
+                    ),
+                    If(self.counter == self.mat,
+                        iopin.eq(~self.pol)
+                    ),
+                    If(self.counter == 0,
+                        iopin.eq(self.pol),
+                        If(self.syncup == 1,
+                            self.mat.eq(self._mat)
+                        )
+                    )
+                ).Else(
+                    self.mat.eq(self._mat),
+                    iopin.eq(self.pol),
+                ),
+            1: If(self.enable & ~self.reset,
+                    If(self.syncup == 0,
+                        self.mat.eq(self._mat)
+                    ),
+                    If(self.counter == self.mat,
+                        iopin.eq(~self.pol)
+                    ),
+                    If(self.counter == 0,
+                        iopin.eq(self.pol),
+                        If(self.syncup == 1,
+                            self.mat.eq(self._mat)
+                        )
+                    )
+                ).Else(
+                    self.mat.eq(self._mat),
+                    iopin.eq(self.pol),
+                ),
+            2: If(self.enable & ~self.reset,
+                    If(self.syncup == 0,
+                        self.mat.eq(self._mat)
+                    ),
+                    If(self.counter == self.mat,
+                        iopin.eq(~self.pol)
+                    ),
+                    If(self.counter == 0,
+                        iopin.eq(self.pol),
+                        If(self.syncup == 1,
+                            self.mat.eq(self._mat)
+                        )
+                    )
+                ).Else(
+                    self.mat.eq(self._mat),
+                    iopin.eq(self.pol),
+                ),
+            3: If(self.enable & ~self.reset,
+                    If(self.syncup == 0,
+                        self.mat.eq(self._mat)
+                    ),
+                    If(self.counter == self.mat,
+                        iopin.eq(~self.pol)
+                    ),
+                    If(self.counter == 0,
+                        iopin.eq(self.pol),
+                        If(self.syncup == 1,
+                            self.mat.eq(self._mat)
+                        )
+                    )
+                ).Else(
+                    self.mat.eq(self._mat),
+                    iopin.eq(self.pol),
+                ),
+        }
         # The pin for this channel
         if iopin is None:
             self.iopin = iopin = Signal()
@@ -122,62 +197,49 @@ class Channel(Module, AutoCSR, AutoDoc):
 
         # Update Channel status
         sync = getattr(self.sync, clock_domain)
-        sync += [
-                If(self.enable & ~self.reset,
-                    If(self.syncup == 0,
-                        self.pw.eq(self._pw)
-                    ),
-                    If(self.counter == self.pw,
-                        iopin.eq(~self.pol)
-                    ),
-                    If(self.counter == 0,
-                        iopin.eq(self.pol),
-                        If(self.syncup == 1,
-                            self.pw.eq(self._pw)
-                        )
-                    )
-                ).Else(
-                    self.pw.eq(self._pw),
-                    iopin.eq(self.pol),
-                )
-            ]
+        sync += Case(self.mode, modes)
 
         if with_csr:
-            self.add_csr(clock_domain)
+            self.add_csr(clock_domain, with_control_reg)
         if with_interrupts:
             self.add_evt(clock_domain)
 
-    def add_csr(self, clock_domain):
+    def add_csr(self, clock_domain, with_control_reg):
         # Control register
-        fields = []
-        fields.append(CSRField(name=F"en", description=F"Enable Channel", reset=self.enable.reset, values=[
-            ("0", "DIS", "Disable Channel"),
-            ("1", "EN", "Enable Channel"),
-            ]))
+        if with_control_reg:
+            fields = []
+            fields.append(CSRField(name=F"ena", description=F"Enable Channel", reset=self.enable.reset, values=[
+                ("0", "DIS", "Disable Channel"),
+                ("1", "EN", "Enable Channel"),
+                ]))
 
-        fields.append(CSRField(name=F"sync", description=F"Enable Synchronus Pulse Width Updates", reset=self.syncup.reset, values=[
-            ("0", "DIS", "Disable Syncup"),
-            ("1", "EN", "Enable Syncup"),
-            ]))
+            fields.append(CSRField(name=F"sup", description=F"Enable Synchronus Pulse Width Updates", reset=self.syncup.reset, values=[
+                ("0", "DIS", "Disable Syncup"),
+                ("1", "EN", "Enable Syncup"),
+                ]))
 
-        self._csr_control = CSRStorage(2, name="control", fields=fields, description="Control Register",
-            reset = Cat(self.enable.reset, self.syncup.reset))
+            fields.append(CSRField(name=F"pol", description=F"Set PWM Polaity", reset=self.pol.reset, values=[
+                ("0", "L", "PWM Starts at 0 and toggles on match."),
+                ("1", "H", "PWM Starts at 1 and toggles on match."),
+                ]))
 
-        # Pulse Width Register
-        self._csr_pw = CSRStorage(self.nbits, name="pw", description="Pulse Width", reset=self._pw.reset)
+            self._csr_control = CSRStorage(2, name="control", fields=fields, description="Control Register",
+                reset = Cat(self.enable.reset, self.syncup.reset))
+
+        # Match register
+        self._csr_mat = CSRStorage(self.nbits, name="match", description="""Channel Match Register\nWhen the counter equals this value the output will toggle.""", reset=self._mat.reset)
 
         # Clock domain stuff
         n = 0 if clock_domain == "sys" else 2
-        control = Signal(2)
-        self.specials += [
-            MultiReg(self._csr_control.storage, control, n=n),
-            MultiReg(self._csr_pw.storage, self._pw, n=n),
-        ]
+        if with_control_reg:
+            control = Signal(2)
+            self.specials += MultiReg(self._csr_control.storage, control, n=n),
+            self.comb += [
+                self.enable.eq(control[0]),
+                self.syncup.eq(control[1])
+            ]
+        self.specials += MultiReg(self._csr_mat.storage, self._mat, n=n)
 
-        self.comb += [
-            self.enable.eq(control[0]),
-            self.syncup.eq(control[1])
-        ]
 
     def add_evt(self, clock_domain):
         self.submodules.ev = EventManager()
@@ -190,7 +252,7 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
         default_enable   = 1,
         default_polarity = 0,
         default_sync     = 0,
-        default_pw       = 512,
+        default_mat       = 512,
         default_period   = 1024):
 
         if pads is None:
@@ -199,22 +261,100 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
         else:
             self.nchannels = len(pads)
             self.pads      = pads
+        
+        # Set up event managers
+        self.submodules.chn_irq = EventManager()
+        self.submodules.cnt_irq = EventManager()
 
-        self.submodules.ev = EventManager()
-        self.ev.placeholder = EventSourceProcess(edge="rising", description="WHy do I need this?")
-        self.submodules.counter = counter = Counter(default_enable=default_enable,
+        # Add counter events
+        self.cnt_irq.of = EventSourcePulse(description="Counter Overflow")
+        self.cnt_irq.uf = EventSourcePulse(description="Counter Underflow")
+
+        # Create and wire the counter 
+        self.submodules.cnt = counter = Counter(default_enable=default_enable,
                                           default_sync=default_sync,
                                           default_period=default_period,
-                                          default_nbits=counter_nbits)
-        for i in range(self.nchannels):
-            setattr(self.submodules, F"ch{i}", Channel(counter.counter, iopin=pads[i], with_interrupts=False,
-                                                                                default_enable=default_enable,
-                                                                                default_sync=default_sync,
-                                                                                default_pw=default_pw,
-                                                                                default_pol=default_polarity,
-                                                                                default_nbits=counter_nbits))
+                                          default_nbits=counter_nbits,
+                                          with_interrupts=False)
 
-        self.ev.finalize()
+        # Set up the enable, polarity and syncup register for each channel.
+        # Enable bit for each channel.
+        fields = []
+        for i in range(self.nchannels):
+            fields.append(CSRField(name=F"ena{i}", description=F"Enable Channel", reset=default_enable, values=[
+                ("0", "DIS", "Disable Channel"),
+                ("1", "EN", "Enable Channel"),
+                ]))
+        self._csr_chn_ena = CSRStorage(self.nchannels, name="chn_enable", fields=fields, description="Channel Enable Register",
+            reset = Replicate(default_enable, self.nchannels))
+        
+        # Polarity bit for each channel.
+        fields = []
+        for i in range(self.nchannels):
+            fields.append(CSRField(name=F"pol{i}", description=F"Channel Output polarity.", reset=default_polarity, values=[
+                ("0", "L", "Channel Starts at 0 and toggles on match."),
+                ("1", "H", "Channel Starts at 1 and toggles on match."),
+                ]))
+
+        self._csr_chn_pol = CSRStorage(self.nchannels, name=F"chn_polarity", fields=fields, description="Channel Polarity  Register",
+            reset = Replicate(default_polarity, self.nchannels))
+
+        # Syncup bit for each channel.
+        fields = []
+        for i in range(self.nchannels):
+            fields.append(CSRField(name=F"sup{i}", description=F"Enable Synchronus Pulse Width Updates", reset=default_sync, values=[
+                ("0", "DIS", "Disable Syncronus Updates"),
+                ("1", "EN", "Enable Syncronus Updates"),
+                ]))
+
+        self._csr_chn_sup = CSRStorage(self.nchannels, name="chn_syncup", fields=fields, description="Channel Synchronus Updates Register",
+            reset = Replicate(default_sync, self.nchannels))
+
+        # Clock domain stuff
+        n = 0 if clock_domain == "sys" else 2
+        enable = Signal(self.nchannels)
+        pol    = Signal(self.nchannels)
+        syncup = Signal(self.nchannels)
+        self.specials += MultiReg(self._csr_chn_ena.storage, enable, n=n)
+        self.specials += MultiReg(self._csr_chn_pol.storage, pol, n=n)
+        self.specials += MultiReg(self._csr_chn_sup.storage, syncup, n=n)
+
+        # Create and wire each of the channels
+        for i in range(self.nchannels):
+            # Create a channel
+            channel =  Channel(counter.counter, iopin=pads[i], with_interrupts=False,
+                         default_enable=default_enable,
+                         default_sync=default_sync,
+                         default_mat=default_mat,
+                         default_pol=default_polarity,
+                         default_nbits=counter_nbits)
+            # Add it to the submodules list
+            setattr(self.submodules, F"ch{i}", channel)
+            # Create an event source for the channel match event
+            channelev = EventSourcePulse(name=F"mat{i}", description=F"Channel {i} match event.")
+            # Add it to the EventManager
+            setattr(self.chn_irq, F"ch{i}", channelev)
+            # Wire it all together
+            self.comb += channelev.trigger.eq(counter.counter == channel.mat)
+            self.comb += channel.enable.eq(enable[i])
+            self.comb += channel.pol.eq(pol[i])
+            self.comb += channel.syncup.eq(syncup[i])
+
+        self.chn_irq.finalize()
+        self.cnt_irq.finalize()
+
+        self.chn_irq.status.description = "Channel match event flags."
+        self.chn_irq.pending.description = "Channel match event flags."
+        self.chn_irq.enable.description = "Channel match event flags."
+
+        # For now the counter and the channels all share 1 IRQ.
+        shared = SharedIRQ(self.chn_irq, self.cnt_irq)
+        self.submodules.ev = shared
+
+###############################################################################################
+#                                             STOP                                            #
+###############################################################################################
+
 
 class MCPWM(Module, AutoCSR, AutoDoc):
     """ Multi-Channel Pulse Width Modulation
