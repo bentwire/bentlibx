@@ -1,7 +1,7 @@
 #
-# This file is part of LiteX.
-#
-# Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright 2023 Bentwire
+# Based on: https://github.com/enjoy-digital/litex/blob/master/litex/soc/cores/pwm.py
+# 
 # SPDX-License-Identifier: BSD-2-Clause
 
 from migen import *
@@ -13,7 +13,9 @@ from litex.soc.integration.doc import AutoDoc, ModuleDoc
 
 class Counter(Module, AutoCSR, AutoDoc):
 
-    def __init__(self, clock_domain="sys", default_enable=1, default_sync=0, default_nbits=32, default_period=0, with_csr=True, with_interrupts=True):
+    def __init__(self, clock_domain="sys", default_enable=1, default_sync=0, default_nbits=32, default_period=0, 
+                 with_csr=True, 
+                 with_interrupts=True):
         # Reset
         self.reset  = Signal()
         # Enable counter
@@ -24,30 +26,115 @@ class Counter(Module, AutoCSR, AutoDoc):
         self.nbits = default_nbits
         # Counter
         self.counter = Signal(self.nbits)
-        # Counter period (counter resets to 0 at this value, or switches direction if up/down counter"
+        # Counter period (counter resets to 0 at this value, or switches direction if up/down counter)
         self.period = Signal(self.nbits, reset=default_period)
         # Period shadow register for sync updates
         self._period = Signal(self.nbits, reset=default_period)
-   
-        # Update counter
-        sync = getattr(self.sync, clock_domain)
-        sync += [
-                If(self.enable & ~self.reset,
+        # Counter direction
+        # 0: Up
+        # 1: Down
+        self.dir = Signal()
+        # Counter Mode register
+        # 0: Up Counter
+        # 1: Down Counter
+        # 2: Up/Down counter
+        # 3: One shot timer.
+        self.mode = Signal(2, reset=0)
+        modes = {
+            0:  If(self.enable & ~self.reset,
                     self.counter.eq(self.counter + 1),
                     If(self.syncup == 0,
-                        self.period.eq(self._period)
+                        self.period.eq(self._period),
                     ),
                     If(self.counter == (self.period - 1),
                         self.counter.eq(0),
+                        If(self.syncup == 1,
+                            self.period.eq(self._period),
+                        ),
+                    ),
+                ).Else(
+                    self.period.eq(self._period),
+                    self.counter.eq(0),
+                ),
+            1:  If(self.enable & ~self.reset,
+                    self.counter.eq(self.counter - 1),
+                    If(self.syncup == 0,
+                        self.period.eq(self._period),
+                    ),
+                    If(self.counter == 0,
+                        self.counter.eq(self.period),
+                        If(self.syncup == 1,
+                            self.period.eq(self._period),
+                        ),
+                    ),
+                ).Else(
+                    self.period.eq(self._period),
+                    self.counter.eq(self.period),
+                ),
+            2:  If(self.enable & ~self.reset,
+                    If(~self.dir,
+                       self.counter.eq(self.counter + 1),
+                    ).Else(
+                        self.counter.eq(self.counter - 1)
+                    ),
+                    
+                    If(self.syncup == 0,
+                        self.period.eq(self._period)
+                    ),
+
+                    If(self.counter == (self.period - 1),
+                        self.dir.eq(1),
+                        If(self.syncup == 1,
+                            self.period.eq(self._period)
+                        )
+                    ),
+                    If(self.counter == 0,
+                        self.dir.eq(0),
                         If(self.syncup == 1,
                             self.period.eq(self._period)
                         )
                     ),
                 ).Else(
                     self.period.eq(self._period),
+                    self.counter.eq(0),
+                    self.dir.eq(0)
+                ),
+            3:  If(self.enable & ~self.reset, 
+                    self.period.eq(self._period),
                     self.counter.eq(0)
-                )
-            ]
+                ).Else(
+                    self.period.eq(self._period),
+                    self.counter.eq(0)
+                ),
+            "default":  If(self.enable & ~self.reset, 
+                    self.period.eq(self._period),
+                    self.counter.eq(0)
+                ).Else(
+                    self.period.eq(self._period),
+                    self.counter.eq(0)
+                ),
+        }
+
+        # Update counter
+        sync = getattr(self.sync, clock_domain)
+        sync += Case(self.mode, modes)
+        # sync += [
+        #         If(self.enable & ~self.reset,
+        #             self.counter.eq(self.counter + 1),
+        #             If(self.syncup == 0,
+        #                 self.period.eq(self._period)
+        #             ),
+        #             If(self.counter == (self.period - 1),
+        #                 self.counter.eq(0),
+        #                 If(self.syncup == 1,
+        #                     self.period.eq(self._period)
+        #                 )
+        #             ),
+        #         ).Else(
+        #             self.period.eq(self._period),
+        #             self.counter.eq(0)
+        #         )
+        #     ]
         if with_csr:
             self.add_csr(clock_domain)
         if with_interrupts:
@@ -66,8 +153,15 @@ class Counter(Module, AutoCSR, AutoDoc):
             ("1", "EN", "Enable Syncup"),
             ]))
 
-        self._csr_control = CSRStorage(2, name="control", fields=fields, description="Enable Counter: 1 Enable, 0 Disable",
-            reset = self.enable.reset)
+        fields.append(CSRField(size=2, name=F"mode", description=F"Set Timer Mode", reset=self.syncup.reset, values=[
+            ("0", "UP", "Count Up"),
+            ("1", "DN", "Count Down"),
+            ("2", "UPDN", "Count up/down"),
+            ("3", "ONE", "One Shot mode"),
+            ]))
+
+        self._csr_control = CSRStorage(2+2, name="control", fields=fields, description="Counter Control Register",
+            reset = Cat(self.enable.reset, self.syncup.reset, 0))
 
         # Counter register
         self._csr_counter = CSRStatus(32, name="value", description="Counter Value", reset=0)
@@ -77,7 +171,7 @@ class Counter(Module, AutoCSR, AutoDoc):
 
         # Clock domain stuff
         n = 0 if clock_domain == "sys" else 2
-        control = Signal(2)
+        control = Signal(2+2)
         self.specials += [
             MultiReg(self._csr_control.storage, control, n=n),
             MultiReg(self._csr_period.storage, self._period, n=n),
@@ -86,7 +180,8 @@ class Counter(Module, AutoCSR, AutoDoc):
 
         self.comb += [
             self.enable.eq(control[0]),
-            self.syncup.eq(control[1])
+            self.syncup.eq(control[1]),
+            self.mode.eq(Cat(control[2], control[3])),
         ]
 
     def add_evt(self, clock_domain):
@@ -99,10 +194,20 @@ class Channel(Module, AutoCSR, AutoDoc):
     def __init__(self, counter, iopin = None, clock_domain="sys", default_pol=0, default_enable=1, default_sync=0, default_nbits=32, default_mat=0, with_csr=True, with_control_reg=False, with_interrupts=True):
         # Reset
         self.reset  = Signal()
+        # Edge detetct
+        self.ioshift = Signal(2)
         # Enable Channel
         self.enable = Signal(reset=default_enable)
         # Channel polarity
         self.pol = Signal(reset=default_pol)
+
+        # The pin for this channel
+        if iopin is None:
+            self.iopin = TSTriple()
+        else:
+            self.iopin = TSTriple()
+            self.specials += self.iopin.get_tristate(iopin)
+
         # Enable Synchronus updates
         self.syncup = Signal(reset=default_sync)
         # Counter number of bits
@@ -125,78 +230,66 @@ class Channel(Module, AutoCSR, AutoDoc):
                         self.mat.eq(self._mat)
                     ),
                     If(self.counter == self.mat,
-                        iopin.eq(~self.pol)
+                        self.iopin.o.eq(~self.iopin.o)
                     ),
                     If(self.counter == 0,
-                        iopin.eq(self.pol),
+                        self.iopin.o.eq(self.pol),
                         If(self.syncup == 1,
                             self.mat.eq(self._mat)
                         )
                     )
                 ).Else(
                     self.mat.eq(self._mat),
-                    iopin.eq(self.pol),
+                    self.iopin.o.eq(self.pol),
                 ),
             1: If(self.enable & ~self.reset,
-                    If(self.syncup == 0,
-                        self.mat.eq(self._mat)
-                    ),
-                    If(self.counter == self.mat,
-                        iopin.eq(~self.pol)
-                    ),
-                    If(self.counter == 0,
-                        iopin.eq(self.pol),
-                        If(self.syncup == 1,
-                            self.mat.eq(self._mat)
-                        )
-                    )
-                ).Else(
-                    self.mat.eq(self._mat),
-                    iopin.eq(self.pol),
+                    If(Cat(self.ioshift[0], self.iopin.i) == Cat(self.pol, ~self.pol),
+                       self.mat.eq(self.counter) # I'm pretty sure this is too nieve and will be off by a count
+                    )  
                 ),
             2: If(self.enable & ~self.reset,
                     If(self.syncup == 0,
                         self.mat.eq(self._mat)
                     ),
                     If(self.counter == self.mat,
-                        iopin.eq(~self.pol)
+                        self.iopin.o.eq(~self.pol)
                     ),
                     If(self.counter == 0,
-                        iopin.eq(self.pol),
+                        self.iopin.o.eq(self.pol),
                         If(self.syncup == 1,
                             self.mat.eq(self._mat)
                         )
                     )
                 ).Else(
                     self.mat.eq(self._mat),
-                    iopin.eq(self.pol),
+                    self.iopin.o.eq(self.pol),
                 ),
             3: If(self.enable & ~self.reset,
                     If(self.syncup == 0,
                         self.mat.eq(self._mat)
                     ),
                     If(self.counter == self.mat,
-                        iopin.eq(~self.pol)
+                        self.iopin.o.eq(~self.pol)
                     ),
                     If(self.counter == 0,
-                        iopin.eq(self.pol),
+                        self.iopin.o.eq(self.pol),
                         If(self.syncup == 1,
                             self.mat.eq(self._mat)
                         )
                     )
                 ).Else(
                     self.mat.eq(self._mat),
-                    iopin.eq(self.pol),
+                    self.iopin.o.eq(self.pol),
+                    
                 ),
         }
-        # The pin for this channel
-        if iopin is None:
-            self.iopin = iopin = Signal()
-        else:
-            self.iopin = iopin
 
         # Update Channel status
         sync = getattr(self.sync, clock_domain)
+        sync += If(self.mode == 1, # Input capture mode
+                   self.iopin.oe.eq(0),
+                   self.ioshift.eq(Cat(self.ioshift[0], self.iopin.i))
+                ).Else(self.iopin.oe.eq(1))
         sync += Case(self.mode, modes)
 
         if with_csr:
@@ -271,7 +364,7 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
         self.cnt_irq.uf = EventSourcePulse(description="Counter Underflow")
 
         # Create and wire the counter 
-        self.submodules.cnt = counter = Counter(default_enable=default_enable,
+        self.submodules.cnt = counter = Counter(clock_domain=clock_domain, default_enable=default_enable,
                                           default_sync=default_sync,
                                           default_period=default_period,
                                           default_nbits=counter_nbits,
@@ -322,7 +415,7 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
         # Create and wire each of the channels
         for i in range(self.nchannels):
             # Create a channel
-            channel =  Channel(counter.counter, iopin=pads[i], with_interrupts=False,
+            channel =  Channel(counter.counter, iopin=pads[i], clock_domain=clock_domain, with_interrupts=False,
                          default_enable=default_enable,
                          default_sync=default_sync,
                          default_mat=default_mat,
