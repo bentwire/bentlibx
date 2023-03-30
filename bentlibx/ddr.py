@@ -13,7 +13,7 @@ from litex.soc.integration.doc import AutoDoc, ModuleDoc
 
 class DDR_IO(Module, AutoCSR, AutoDoc):
 
-    def __init__(self, pin, ddr_data_in = None, ddr_data_out = None, 
+    def __init__(self, pina, pinb, ddr_data_in = None, ddr_data_out = None, 
                  clock_domain="sys", ddr_clock_domain="sys4x_i"):
         self.reset = Signal()
         self.calib = Signal()
@@ -65,7 +65,8 @@ class DDR_IO(Module, AutoCSR, AutoDoc):
                                   i_I = ddr_o,
                                   i_OEN = ddr_oen,
                                   o_O = ddr_i,
-                                  io_IO = pin)
+                                  io_IO = pina)
+                                  #io_IOB = pinb)
         
         self._csr_din      = CSRStatus(8, name="in", description="Input Value", reset=0)
         self._csr_dout     = CSRStorage(8, name="out", description="Output Value", reset=0)

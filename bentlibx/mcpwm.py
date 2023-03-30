@@ -144,31 +144,30 @@ class Counter(Module, AutoCSR, AutoDoc):
         # Control register
         fields = []
         print("ERST: {o}".format(o=self.enable.reset))
-        fields.append(CSRField(name=F"ena", description=F"Enable Counter", reset=self.enable.reset, values=[
+        fields.append(CSRField(name=F"ena", description=F"Enable Counter", reset=self.enable.reset.value, values=[
             ("0", "DIS", "Disable Counter"),
             ("1", "EN", "Enable Counter"),
             ]))
 
-        fields.append(CSRField(name=F"sup", description=F"Enable Synchronus Period Updates", reset=self.syncup.reset, values=[
+        fields.append(CSRField(name=F"sup", description=F"Enable Synchronus Period Updates", reset=self.syncup.reset.value, values=[
             ("0", "DIS", "Disable Syncup"),
             ("1", "EN", "Enable Syncup"),
             ]))
 
-        fields.append(CSRField(size=2, name=F"mode", description=F"Set Timer Mode", reset=0, values=[
+        fields.append(CSRField(size=2, name=F"mode", description=F"Set Timer Mode", reset=self.mode.reset.value, values=[
             ("0", "UP", "Count Up"),
             ("1", "DN", "Count Down"),
             ("2", "UPDN", "Count up/down"),
             ("3", "ONE", "One Shot mode"),
             ]))
 
-        self._csr_control = CSRStorage(2+2, name="control", fields=fields, description="Counter Control Register",
-            reset = 1) #Cat(self.enable.reset, self.syncup.reset, 0))
+        self._csr_control = CSRStorage(2+2, name="control", fields=fields, description="Counter Control Register") #Cat(self.enable.reset, self.syncup.reset, 0))
 
         # Counter register
-        self._csr_counter = CSRStatus(32, name="value", description="Counter Value", reset=0)
+        self._csr_counter = CSRStatus(32, name="value", description="Counter Value", reset=self.counter.reset.value)
 
         # Period register
-        self._csr_period = CSRStorage(32, name="period", reset_less=True, description="Counter Period", reset = self.period.reset)
+        self._csr_period = CSRStorage(32, name="period", reset_less=True, description="Counter Period", reset = self.period.reset.value)
 
         # Clock domain stuff
         n = 0 if clock_domain == "sys" else 2
@@ -302,26 +301,25 @@ class Channel(Module, AutoCSR, AutoDoc):
         # Control register
         if with_control_reg:
             fields = []
-            fields.append(CSRField(name=F"ena", description=F"Enable Channel", reset=self.enable.reset, values=[
+            fields.append(CSRField(name=F"ena", description=F"Enable Channel", reset=self.enable.reset.value, values=[
                 ("0", "DIS", "Disable Channel"),
                 ("1", "EN", "Enable Channel"),
                 ]))
 
-            fields.append(CSRField(name=F"sup", description=F"Enable Synchronus Pulse Width Updates", reset=self.syncup.reset, values=[
+            fields.append(CSRField(name=F"sup", description=F"Enable Synchronus Pulse Width Updates", reset=self.syncup.reset.value, values=[
                 ("0", "DIS", "Disable Syncup"),
                 ("1", "EN", "Enable Syncup"),
                 ]))
 
-            fields.append(CSRField(name=F"pol", description=F"Set PWM Polaity", reset=self.pol.reset, values=[
+            fields.append(CSRField(name=F"pol", description=F"Set PWM Polaity", reset=self.pol.reset.value, values=[
                 ("0", "L", "PWM Starts at 0 and toggles on match."),
                 ("1", "H", "PWM Starts at 1 and toggles on match."),
                 ]))
 
-            self._csr_control = CSRStorage(2, name="control", fields=fields, description="Control Register",
-                reset = 1) #Cat(self.enable.reset, self.syncup.reset))
+            self._csr_control = CSRStorage(2, name="control", fields=fields, description="Control Register")
 
         # Match register
-        self._csr_mat = CSRStorage(self.nbits, name="match", description="""Channel Match Register\nWhen the counter equals this value the output will toggle.""", reset=self._mat.reset)
+        self._csr_mat = CSRStorage(self.nbits, name="match", description="""Channel Match Register\nWhen the counter equals this value the output will toggle.""", reset=self._mat.reset.value)
 
         # Clock domain stuff
         n = 0 if clock_domain == "sys" else 2
@@ -379,8 +377,7 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
                 ("0", "DIS", "Disable Channel"),
                 ("1", "EN", "Enable Channel"),
                 ]))
-        self._csr_chn_ena = CSRStorage(self.nchannels, name="chn_enable", fields=fields, description="Channel Enable Register",
-            reset = default_enable*(2**self.nchannels-1)) #Replicate(default_enable, self.nchannels))
+        self._csr_chn_ena = CSRStorage(self.nchannels, name="chn_enable", fields=fields, description="Channel Enable Register")
         
         # Polarity bit for each channel.
         fields = []
@@ -390,8 +387,7 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
                 ("1", "H", "Channel Starts at 1 and toggles on match."),
                 ]))
 
-        self._csr_chn_pol = CSRStorage(self.nchannels, name=F"chn_polarity", fields=fields, description="Channel Polarity  Register",
-            reset = default_polarity*(2**self.nchannels-1)) #Replicate(default_polarity, self.nchannels))
+        self._csr_chn_pol = CSRStorage(self.nchannels, name=F"chn_polarity", fields=fields, description="Channel Polarity  Register")
 
         # Syncup bit for each channel.
         fields = []
@@ -401,8 +397,7 @@ class AdvancedTimerCounter(Module, AutoCSR, AutoDoc):
                 ("1", "EN", "Enable Syncronus Updates"),
                 ]))
 
-        self._csr_chn_sup = CSRStorage(self.nchannels, name="chn_syncup", fields=fields, description="Channel Synchronus Updates Register",
-            reset = default_sync*(2**self.nchannels-1)) #Replicate(default_sync, self.nchannels))
+        self._csr_chn_sup = CSRStorage(self.nchannels, name="chn_syncup", fields=fields, description="Channel Synchronus Updates Register")
 
         # Clock domain stuff
         n = 0 if clock_domain == "sys" else 2
