@@ -20,6 +20,7 @@ class DDR_IO(Module, AutoCSR, AutoDoc):
         self.clock_pol = Signal()
         ddr_o   = Signal()
         ddr_i   = Signal()
+        ddr_i_dlyd = Signal()
         ddr_oen = Signal()
         ddr_data_i = Signal(8)
         ddr_data_o = Signal(8)
@@ -50,7 +51,7 @@ class DDR_IO(Module, AutoCSR, AutoDoc):
                                   i_PCLK  = ClockSignal(clock_domain),
                                   i_FCLK  = ClockSignal(ddr_clock_domain),
                                   i_CALIB = self.calib,
-                                  i_D = ddr_i,
+                                  i_D = ddr_i_dlyd,
                                   o_Q0 = ddr_data_i[0],
                                   o_Q1 = ddr_data_i[1],
                                   o_Q2 = ddr_data_i[2],
@@ -61,6 +62,32 @@ class DDR_IO(Module, AutoCSR, AutoDoc):
                                   o_Q7 = ddr_data_i[7],
                                   )
         
+        ddr_i_sdtap = Signal(reset=1)
+        ddr_i_setn  = Signal()
+        ddr_i_value = Signal()
+        ddr_i_df    = Signal()
+        ddr_i_lag   = Signal()
+        ddr_i_lead  = Signal()
+
+        ddr_o_df    = Signal()
+
+        # self.specials += Instance("IEM",
+        #                           i_D = ddr_i,
+        #                           i_RESET = ResetSignal(clock_domain),
+        #                           i_CLK = ClockSignal(clock_domain),
+        #                           i_MCLK = ClockDomain(ddr_clock_domain),
+        #                           o_LAG = ddr_i_lag,
+        #                           o_LEAD = ddr_i_lead
+        #                           )
+        
+        self.specials += Instance("IODELAY",
+                                  i_DI = ddr_i,
+                                  o_DO = ddr_i_dlyd,
+                                  i_SDTAP = ddr_i_sdtap,
+                                  i_VALUE = ddr_i_value,
+                                  i_SETN = ddr_i_setn,
+                                  o_DF = ddr_i_df)
+        
         self.specials += Instance("IOBUF",
                                   i_I = ddr_o,
                                   i_OEN = ddr_oen,
@@ -69,9 +96,29 @@ class DDR_IO(Module, AutoCSR, AutoDoc):
                                   #io_IOB = pinb)
         
         self._csr_din      = CSRStatus(8, name="in", description="Input Value", reset=0)
+        stat_bits          = Signal(6)
+        ctrl_bits          = Signal(3)
+        self._csr_stat     = CSRStatus(6, name="stat", description="DF LAG and LEAD for IO", reset=0)
         self._csr_dout     = CSRStorage(8, name="out", description="Output Value", reset=0)
-        self._csr_dout_oen = CSRStorage(4, name="oen", description="Output Enable Value", reset=0)
+        self._csr_dout_oen = CSRStorage(4, name="oen", description="Output Enable Value", reset=0b1111)
         self._csr_calib    = CSRStorage(name="calib", reset=0)
+
+        fields = []
+        fields.append(CSRField(name=F"sdtap", description=F"Enable Dynamic Delay", reset=0, values=[
+            ("0", "Static", "Static built in delay"),
+            ("1", "Dynamic", "Dynamic delay controlled by value and setn bits."),
+            ]))
+
+        fields.append(CSRField(name=F"value", description=F"Pulse for delay inc/dec (depends on setn)", reset=0, values=[
+            ("0", "0"),
+            ("1", "1"),
+            ]))
+
+        fields.append(CSRField(name=F"setn", description=F"Increment or decrement delay", reset=0, values=[
+            ("0", "INC", "Increment delay on value pulse"),
+            ("1", "DEC", "Decrement delay on value p[ulse"),
+            ]))
+        self._csr_ddr_i_ctrl = CSRStorage(name="input_control", fields=fields, reset=0)
 
         # Clock domain stuff
         n = 0 if clock_domain == "sys" else 2
@@ -79,9 +126,14 @@ class DDR_IO(Module, AutoCSR, AutoDoc):
             MultiReg(self._csr_dout.storage, ddr_data_o, n=n),
             MultiReg(self._csr_dout_oen.storage, ddr_data_oen, n=n),
             MultiReg(ddr_data_i, self._csr_din.status, n=n),
-            MultiReg(self._csr_calib.storage, self.calib, n=n)
+            MultiReg(stat_bits, self._csr_stat.status, n=n),
+            MultiReg(self._csr_calib.storage, self.calib, n=n),
+            MultiReg(self._csr_ddr_i_ctrl.storage, ctrl_bits, n=n)
         ]
-        
+        self.comb += stat_bits.eq(Cat(ddr_i_df, ddr_i_lag, ddr_i_lead, ddr_o_df))
+        self.comb += ddr_i_sdtap.eq(ctrl_bits[0])
+        self.comb += ddr_i_value.eq(ctrl_bits[1])
+        self.comb += ddr_i_setn.eq(ctrl_bits[2])
         sync = getattr(self.sync, clock_domain)
         # sync += If(~self.reset,
         #            _ddr_data_i.eq(ddr_data_i),
