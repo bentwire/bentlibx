@@ -88,13 +88,20 @@ class DDR_8IO(Module, AutoCSR, AutoDoc):
                                   i_VALUE = ddr_i_value,
                                   i_SETN = ddr_i_setn,
                                   o_DF = ddr_i_df)
-        
-        self.specials += Instance("IOBUF",
-                                  i_I = ddr_o,
-                                  i_OEN = ddr_oen,
-                                  o_O = ddr_i,
-                                  io_IO = pina)
-                                  #io_IOB = pinb)
+        if pinb is None:        
+            self.specials += Instance("IOBUF",
+                                    i_I = ddr_o,
+                                    i_OEN = ddr_oen,
+                                    o_O = ddr_i,
+                                    io_IO = pina)
+                                    #io_IOB = pinb)
+        else:
+            self.specials += Instance("TLVDS_IOBUF",
+                                    i_I = ddr_o,
+                                    i_OEN = ddr_oen,
+                                    o_O = ddr_i,
+                                    io_IO = pina,
+                                    io_IOB = pinb)
         
         self._csr_din      = CSRStatus(8, name="in", description="Input Value", reset=0)
         stat_bits          = Signal(6)
@@ -145,7 +152,7 @@ class DDR_8IO(Module, AutoCSR, AutoDoc):
         #         )
 
 class DDR8_10O(Module, AutoCSR, AutoDoc):
-    def __init__(self, pin, clock_domain="sys", par_clock_domain="sys8x_5", ser_clock_domain="sys8x"):
+    def __init__(self, pin, pinb=None, clock_domain="sys", par_clock_domain="sys8x_5", ser_clock_domain="sys8x"):
 
         self.reset      = Signal()
 
@@ -157,8 +164,8 @@ class DDR8_10O(Module, AutoCSR, AutoDoc):
         
         ser_out         = Signal()
         ser_data        = Signal(10)
-        self.data       = Signal(8)
-        self.k          = Signal()
+        self.data       = Signal(8, reset=0x3c)
+        self.k          = Signal(reset=1)
 
         self.specials += Instance("OSER10",
                                   i_D0 = ser_data[0],
@@ -175,11 +182,17 @@ class DDR8_10O(Module, AutoCSR, AutoDoc):
                                   i_PCLK = ClockSignal(par_clock_domain),
                                   i_RESET = ResetSignal(ser_clock_domain),
                                   o_Q = ser_out)
-        
-        self.specials += Instance("OBUF",
-                                  i_I = ser_out,
-                                  o_O = pin)
-                                  #io_IOB = pinb)
+        if pinb is None:        
+            self.specials += Instance("OBUF",
+                                    i_I = ser_out,
+                                    o_O = pin)
+                                    #io_IOB = pinb)
+        else:
+            self.specials += Instance("TLVDS_OBUF",
+                                    i_I = ser_out,
+                                    o_O = pin,
+                                    o_OB = pinb)
+
         self.submodules.encoder = ClockDomainsRenamer(par_clock_domain)(Encoder())
 
         self.comb += ser_data.eq(self.encoder.output[0])
@@ -187,7 +200,7 @@ class DDR8_10O(Module, AutoCSR, AutoDoc):
         self.comb += self.encoder.k[0].eq(self.k)        
 
 class DDR10_8I(Module, AutoCSR, AutoDoc):
-    def __init__(self, pin, clock_domain="sys", par_clock_domain="par_clk", ser_clock_domain="par_clk5xp", with_csr=True):
+    def __init__(self, pin, pinb=None, clock_domain="sys", par_clock_domain="sys8x_5", ser_clock_domain="sys8x", with_csr=True):
 
         #self.reset  = Signal()
         self.calib  = Signal()
@@ -209,20 +222,63 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
         self.par_clk    = ClockSignal(par_clock_domain)
         # self.ser_reset  = ResetSignal(ser_clock_domain)
         
-        self.ser_in     = Signal()
+        ser_in     = Signal()
         ser_in_dlyd     = Signal()
         ser_data        = Signal(10)
+        self.ser_data        = Signal(10)
 
+        self.updn = Signal()
+        self.stop = Signal()
+        self.step = Signal(8)
+        self.move = Signal()
+        self.load = Signal()
+        self.lock = Signal()
+        self.flag = Signal()
+
+        clkout = Signal()
         
+        # self.specials += Instance("DLL",
+        #     p_SCAL_EN  = "false",
+        #     i_RESET    = ResetSignal("init"),
+        #     i_CLKIN    = clkout,
+        #     i_UPDNCNTL = self.updn,
+        #     i_STOP     = self.stop,
+        #     o_STEP     = self.step,
+        #     o_LOCK     = self.lock
+        # )
+
+        # self.specials += Instance("DLLDLY",
+        #                           i_CLKIN   = self.ser_clk,
+        #                           #i_DLLSTEP = ,
+        #                           i_DIR     = self.updn,
+        #                           i_LOADN   = self.load,
+        #                           i_MOVE    = self.move,
+        #                           o_CLKOUT  = clkout,
+        #                           o_FLAG    = self.flag)
+        
+        # self.specials += Instance("IEM",
+        #                           i_RESET = self.reset,
+        #                           i_D = ser_in,
+        #                           i_CLK = ClockSignal(ser_clock_domain),
+        #                           i_MCLK = ClockSignal(par_clock_domain),
+        #                           o_LAG = self.lag,
+        #                           o_LEAD = self.lead)        
+
+        lag    = Signal()
+        lag_d  = Signal()
+        lag_r  = Signal()
+        lead   = Signal()
+        lead_d = Signal()
+        lead_r = Signal()
 
         self.specials += Instance("IEM",
-                                  i_RESET = self.reset,
+                                  i_RESET = ResetSignal(par_clock_domain),
                                   i_D = ser_in_dlyd,
-                                  i_CLK = self.ser_clk,
-                                  i_MCLK = self.par_clk,
+                                  i_CLK = ClockSignal(ser_clock_domain),
+                                  i_MCLK = ClockSignal(par_clock_domain),
                                   o_LAG = self.lag,
-                                  o_LEAD = self.lead)        
-
+                                  o_LEAD = self.lead)
+        
         self.specials += Instance("IDES10",
                                   o_Q0 = ser_data[0],
                                   o_Q1 = ser_data[1],
@@ -234,35 +290,68 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
                                   o_Q7 = ser_data[7],
                                   o_Q8 = ser_data[8],
                                   o_Q9 = ser_data[9],
-                                  i_FCLK = self.ser_clk,
-                                  i_PCLK = self.par_clk,
-                                  i_RESET = self.reset,
+                                  i_FCLK = ClockSignal(ser_clock_domain),
+                                  i_PCLK = ClockSignal(par_clock_domain),
+                                  i_RESET = ResetSignal(par_clock_domain),
                                   i_D = ser_in_dlyd,
                                   i_CALIB = self.calib)
 
+        # self.specials += Instance("IDES10",
+        #                           o_Q0 = self.ser_data[0],
+        #                           o_Q1 = self.ser_data[1],
+        #                           o_Q2 = self.ser_data[2],
+        #                           o_Q3 = self.ser_data[3],
+        #                           o_Q4 = self.ser_data[4],
+        #                           o_Q5 = self.ser_data[5],
+        #                           o_Q6 = self.ser_data[6],
+        #                           o_Q7 = self.ser_data[7],
+        #                           o_Q8 = self.ser_data[8],
+        #                           o_Q9 = self.ser_data[9],
+        #                           i_FCLK = ClockSignal(ser_clock_domain),
+        #                           i_PCLK = ClockSignal(par_clock_domain),
+        #                           i_RESET = ResetSignal(par_clock_domain),
+        #                           i_D = ser_in_dlyd,
+        #                           i_CALIB = self.calib)
+
         self.specials += Instance("IODELAY",
-                                  i_DI = self.ser_in,
+                                  p_C_STATIC_DLY = 0,
+                                  i_DI = ser_in,
                                   o_DO = ser_in_dlyd,
                                   i_SDTAP = self.sdtap,
                                   i_VALUE = self.value,
                                   i_SETN = self.setn,
                                   o_DF = self.df)
 
-        self.specials += Instance("IBUF",
-                                  i_I = pin,
-                                  o_O = self.ser_in)
+        if pinb is None:
+            self.specials += Instance("IBUF",
+                                    i_I = pin,
+                                    o_O = ser_in)
+        else:
+            self.specials += Instance("TLVDS_IBUF",
+                                    i_I = pinb,
+                                    i_IB = pin,
+                                    o_O = ser_in)
+
 
         self.submodules.decoder = ClockDomainsRenamer(par_clock_domain)(Decoder())
-
-        self.comb += self.decoder.input.eq(ser_data)
+        #self.submodules.decoder = Decoder()
+        #self.comb += self.decoder.ce.eq(1)
+        self.comb += self.decoder.input.eq(self.ser_data)
         self.comb += self.data.eq(self.decoder.d)
         self.comb += self.k.eq(self.decoder.k)        
         self.comb += self.invalid.eq(self.decoder.invalid)
+#        self.comb += self.lag.eq(lag)
+#        self.comb += self.lead.eq(lead)
+        self.comb += self.ser_data.eq(~ser_data)
+        # sync = getattr(self.sync, clock_domain)
+        # sync += lag_d.eq(lag)
+        # self.comb += lag_r.eq(lag & ~lag_d)
+        # self.sync += self.lag.eq(lag_r)
 
         if with_csr:
             self.add_csr(clock_domain=clock_domain, par_clock_domain=par_clock_domain, ser_clock_domain=ser_clock_domain)
 
-    def add_csr(self, clock_domain="sys", par_clock_domain="par_clk", ser_clock_domain="par_clk5xp"):
+    def add_csr(self, clock_domain="sys", par_clock_domain="sys8x_5", ser_clock_domain="sys8x"):
         stat_bits          = Signal(3)
         ctrl_bits          = Signal(3)
 
@@ -283,6 +372,7 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
             ]))
 
         self._csr_din = CSRStatus(fields=fields, name="in", description="Decoded serial rx data", reset=0)
+        self._csr_raw = CSRStatus(10, name="raw", description="Raw serial rx data", reset=0)
 
         fields = []
         fields.append(CSRField(name=F"lag", description=F"IEM LAG Output", reset=0, values=[
@@ -316,19 +406,26 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
 
         fields.append(CSRField(name=F"setn", description=F"Increment or decrement delay", reset=0, values=[
             ("0", "INC", "Increment delay on value pulse"),
-            ("1", "DEC", "Decrement delay on value p[ulse"),
+            ("1", "DEC", "Decrement delay on value pulse"),
             ]))
         self._csr_ctrl = CSRStorage(name="input_control", fields=fields, reset=0)
 
+        regdata = Signal(8+2)
+        self.comb += regdata.eq(self.data)
+        self.comb += regdata[8].eq(self.k)
+        self.comb += regdata[9].eq(self.invalid)
         # Clock domain stuff
-        n = 0 if par_clock_domain == "sys" else 2
+        #n = 0 if par_clock_domain == "sys" else 2
         self.specials += [
-            MultiReg(self.data, self._csr_din.status,  n=n),
-            MultiReg(stat_bits, self._csr_stat.status, n=n),
-            MultiReg(self._csr_calib.storage, self.calib, n=n),
-            MultiReg(self._csr_ctrl.storage, ctrl_bits, n=n)
+            MultiReg(regdata, self._csr_din.status, "sys"),
+            MultiReg(stat_bits, self._csr_stat.status, "sys"),
+            MultiReg(self.ser_data, self._csr_raw.status, "sys"),
+            MultiReg(self._csr_calib.storage, self.calib, par_clock_domain),
+            MultiReg(self._csr_ctrl.storage, ctrl_bits, par_clock_domain)
         ]
-        self.comb += stat_bits.eq(Cat(self.lag, self.lead, self.df))
+        self.comb += stat_bits[0].eq(self.lag)
+        self.comb += stat_bits[1].eq(self.lead)
+        self.comb += stat_bits[2].eq(self.df)
         self.comb += self.sdtap.eq(ctrl_bits[0])
         self.comb += self.value.eq(ctrl_bits[1])
         self.comb += self.setn.eq(ctrl_bits[2])
