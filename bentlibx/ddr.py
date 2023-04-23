@@ -14,7 +14,7 @@ from litex.soc.cores.code_8b10b import *
 
 class DDR_8IO(Module, AutoCSR, AutoDoc):
 
-    def __init__(self, pina, pinb, ddr_data_in = None, ddr_data_out = None, 
+    def __init__(self, pina, pinb = None, ddr_data_in = None, ddr_data_out = None, 
                  clock_domain="sys", ddr_clock_domain="sys4x"):
         self.reset = Signal()
         self.calib = Signal()
@@ -180,13 +180,12 @@ class DDR8_10O(Module, AutoCSR, AutoDoc):
                                   i_D9 = ser_data[9],
                                   i_FCLK = ClockSignal(ser_clock_domain),
                                   i_PCLK = ClockSignal(par_clock_domain),
-                                  i_RESET = ResetSignal(ser_clock_domain),
+                                  i_RESET = ResetSignal(par_clock_domain),
                                   o_Q = ser_out)
         if pinb is None:        
             self.specials += Instance("OBUF",
                                     i_I = ser_out,
                                     o_O = pin)
-                                    #io_IOB = pinb)
         else:
             self.specials += Instance("TLVDS_OBUF",
                                     i_I = ser_out,
@@ -215,6 +214,7 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
         self.lead    = Signal()
         self.locked  = Signal()
         self.invalid = Signal()
+        self.invert  = Signal()
 
         self.clk        = ClockSignal(clock_domain)
         self.reset      = ResetSignal(clock_domain)
@@ -234,6 +234,7 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
         self.load = Signal()
         self.lock = Signal()
         self.flag = Signal()
+        self.hold = Signal()
 
         clkout = Signal()
         
@@ -342,18 +343,71 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
         self.comb += self.invalid.eq(self.decoder.invalid)
 #        self.comb += self.lag.eq(lag)
 #        self.comb += self.lead.eq(lead)
-        self.comb += self.ser_data.eq(~ser_data)
+        self.comb += self.ser_data.eq(self.invert ^ ser_data)
         # sync = getattr(self.sync, clock_domain)
         # sync += lag_d.eq(lag)
         # self.comb += lag_r.eq(lag & ~lag_d)
         # self.sync += self.lag.eq(lag_r)
 
+        # Lets try some automation
+        self.submodules.iodel_fsm = ClockDomainsRenamer(par_clock_domain)(FSM())
+        
+        lock_timer   = Signal(6, reset=0)
+        lock_timeout = Signal(6, reset=15)
+
+        self.iodel_fsm.act("INIT",
+                          NextValue(lock_timer, 0),
+                          self.lock.eq(0),
+                          NextState("HUNT"))
+        self.iodel_fsm.act("HUNT",
+                           self.lock.eq(0),
+                           If(self.lead & ~self.hold,
+                              self.setn.eq(0), #Increase delay
+                              self.value.eq(0),
+                              NextValue(lock_timer, 0),
+                              NextState("UP")
+                            ).Elif(self.lag & ~self.hold,
+                                    self.setn.eq(1), # Decrease delay
+                                    self.value.eq(0),
+                                    NextValue(lock_timer, 0),
+                                    NextState("DOWN")
+                            ).Else(self.value.eq(0),
+                                   NextValue(lock_timer, lock_timer + 1),
+                                   If(lock_timer >= lock_timeout,
+                                      NextState("LOCK"))),
+                        )
+        self.iodel_fsm.act("UP",
+                           self.value.eq(1),
+                           If(~self.hold,
+                              NextState("HUNT")))
+                           
+        self.iodel_fsm.act("DOWN",
+                           self.value.eq(1),
+                           If(~self.hold,
+                              NextState("HUNT")))
+        
+        self.iodel_fsm.act("LOCK",
+                           self.lock.eq(1),
+                           If(self.lead & ~self.hold,
+                              self.setn.eq(0), #Increase delay
+                              self.value.eq(0),
+                              self.lock.eq(0),
+                              NextValue(lock_timer, 0),
+                              NextState("UP")
+                            ).Elif(self.lag & ~self.hold,
+                                    self.setn.eq(1), # Decrease delay
+                                    self.value.eq(0),
+                                    self.lock.eq(0),
+                                    NextValue(lock_timer, 0),
+                                    NextState("DOWN")
+                            ))
+
         if with_csr:
             self.add_csr(clock_domain=clock_domain, par_clock_domain=par_clock_domain, ser_clock_domain=ser_clock_domain)
 
     def add_csr(self, clock_domain="sys", par_clock_domain="sys8x_5", ser_clock_domain="sys8x"):
-        stat_bits          = Signal(3)
-        ctrl_bits          = Signal(3)
+        stat_bits          = Signal(4)
+        ctrl_bits          = Signal(5)
 
         fields = []
         fields.append(CSRField(size=8, name=F"in", description=F"RX Data after decode", reset=0, values=[
@@ -386,8 +440,13 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
             ]))
 
         fields.append(CSRField(name=F"df", description=F"Delay at min/max", reset=0, values=[
-            ("0", "INC", "Increment delay on value pulse"),
-            ("1", "DEC", "Decrement delay on value p[ulse"),
+            ("0", "OK"),
+            ("1", "END"),
+            ]))
+
+        fields.append(CSRField(name=F"lock", description=F"CDR Lock", reset=0, values=[
+            ("0", "NO LOCK"),
+            ("1", "LOCK"),
             ]))
 
         self._csr_stat     = CSRStatus(name="stat", fields=fields, description="DF LAG and LEAD for IO", reset=0)
@@ -408,7 +467,17 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
             ("0", "INC", "Increment delay on value pulse"),
             ("1", "DEC", "Decrement delay on value pulse"),
             ]))
-        self._csr_ctrl = CSRStorage(name="input_control", fields=fields, reset=0)
+
+        fields.append(CSRField(name=F"inv", description=F"Invert data stream", reset=0, values=[
+            ("0", "NO"),
+            ("1", "YES"),
+            ]))
+
+        fields.append(CSRField(name=F"hold", description=F"Pause CDR state machine", reset=0, values=[
+            ("0", "NO"),
+            ("1", "YES"),
+            ]))
+        self._csr_ctrl = CSRStorage(name="input_control", fields=fields)
 
         regdata = Signal(8+2)
         self.comb += regdata.eq(self.data)
@@ -426,7 +495,10 @@ class DDR10_8I(Module, AutoCSR, AutoDoc):
         self.comb += stat_bits[0].eq(self.lag)
         self.comb += stat_bits[1].eq(self.lead)
         self.comb += stat_bits[2].eq(self.df)
+        self.comb += stat_bits[3].eq(self.lock)
         self.comb += self.sdtap.eq(ctrl_bits[0])
         self.comb += self.value.eq(ctrl_bits[1])
         self.comb += self.setn.eq(ctrl_bits[2])
-        sync = getattr(self.sync, clock_domain)
+        self.comb += self.invert.eq(ctrl_bits[3])
+        self.comb += self.hold.eq(ctrl_bits[4])
+
